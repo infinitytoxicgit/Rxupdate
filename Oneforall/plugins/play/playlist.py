@@ -15,7 +15,7 @@ from config import BANNED_USERS, SERVER_PLAYLIST_LIMIT
 from Oneforall import Carbon, app
 from Oneforall.core.mongo import mongodb
 from Oneforall.misc import db
-from Oneforall.utils.database import get_lang
+from Oneforall.utils.database import add_active_video_chat, get_lang, remove_active_video_chat
 from Oneforall.utils.decorators.language import language, languageCB
 from Oneforall.utils.inline.playlist import (
     botplaylist_markup,
@@ -50,7 +50,7 @@ async def _lang(chat_id):
     return get_string(await get_lang(chat_id))
 
 
-async def _get_playlists(chat_id: int) -> Dict[str, int]:
+async def _get_playlists(chat_id: int) -> Dict[str, dict]:
     _notes = await playlistdb.find_one({"chat_id": chat_id})
     if not _notes:
         return {}
@@ -104,7 +104,7 @@ async def get_rich_del_page(user_id: int, page: int = 0):
     blocks = []
     for x in current_batch:
         _note = await get_playlist(user_id, x)
-        title = _note["title"].title() if _note else str(x)
+        title = _note["title"].title() if (_note and isinstance(_note, dict) and "title" in _note) else str(x)
         blocks.append(
             types.InputRichBlockButtons(
                 buttons=[
@@ -250,10 +250,15 @@ async def stream_user_playlist_callback(client, CallbackQuery):
     except Exception:
         pass
 
-    video = True if mode == "v" else None
+    # Ensure explicit video boolean and sync active video db state
+    is_video = True if mode == "v" else None
+    if is_video:
+        await add_active_video_chat(chat_id)
+    else:
+        await remove_active_video_chat(chat_id)
+
     mystic = await client.send_message(chat_id, "🔄 **Fetching playlist & starting stream...**")
 
-    # Pass clean videoids list
     result = [str(k).strip() for k in notes.keys()]
 
     try:
@@ -266,7 +271,7 @@ async def stream_user_playlist_callback(client, CallbackQuery):
             chat_id,
             user_name,
             chat_id,
-            video,
+            video=is_video,
             streamtype="playlist",
         )
     except Exception as e:
@@ -285,7 +290,7 @@ async def del_plist_msg(client, message: Message, _):
         "<blockquote><emoji id=5895705279416241926>🗑️</emoji> <u><b>MANAGE & REMOVE TRACKS</b></u></blockquote>\n\n"
         "<blockquote expandable>"
         f"Total <b>{total_tracks}</b> tracks inside playlist.\n"
-        "Use ⬅️ / ➡️ to switch pages and tap any song to delete.</blockquote>"
+        "Use ⬅️ / ➡️️ to switch pages and tap any song to delete.</blockquote>"
     )
     blocks = html_to_rich_blocks(caption)
     blocks += del_blocks
@@ -356,24 +361,40 @@ async def open_autoplay_modal(client, CallbackQuery):
     await CallbackQuery.answer()
 
 
-@app.on_callback_query(filters.regex(r"^add_playlist\|") & ~BANNED_USERS)
+# Unified Add to Playlist Handler (works for both normal now-playing and autoplay button)
+@app.on_callback_query(filters.regex(r"^(add_playlist\||add_playlist_)") & ~BANNED_USERS)
 @languageCB
 async def add_current_playing_to_playlist(client, CallbackQuery, _):
-    try:
-        chat_id = int(CallbackQuery.data.split("|")[1])
-    except Exception:
-        chat_id = CallbackQuery.message.chat.id
-
     user_id = CallbackQuery.from_user.id
-    tracks = db.get(chat_id)
-    if not tracks:
-        return await CallbackQuery.answer("❌ Currently no track is streaming.", show_alert=True)
+    raw_data = CallbackQuery.data
 
-    current_track = tracks[0]
-    raw_vid = current_track.get("vidid") or current_track.get("file", "")
-    clean_vid = str(raw_vid).replace("vid_", "").strip()
-    title = current_track.get("title", "Unknown Track")
-    duration = current_track.get("dur", "00:00")
+    clean_vid = None
+    title = "Song Track"
+    duration = "03:30"
+
+    if raw_data.startswith("add_playlist_"):
+        clean_vid = raw_data.replace("add_playlist_", "").strip()
+        try:
+            from Oneforall import YouTube
+            title, duration, _, _, _ = await YouTube.details(clean_vid, True)
+            title = title[:50].title()
+        except Exception:
+            pass
+    else:
+        try:
+            chat_id = int(raw_data.split("|")[1])
+        except Exception:
+            chat_id = CallbackQuery.message.chat.id
+
+        tracks = db.get(chat_id)
+        if not tracks:
+            return await CallbackQuery.answer("❌ Currently no track is streaming.", show_alert=True)
+
+        current_track = tracks[0]
+        raw_vid = current_track.get("vidid") or current_track.get("file", "")
+        clean_vid = str(raw_vid).replace("vid_", "").strip()
+        title = current_track.get("title", "Unknown Track")
+        duration = current_track.get("dur", "00:00")
 
     if not clean_vid:
         return await CallbackQuery.answer("❌ Track ID not found.", show_alert=True)
@@ -448,7 +469,7 @@ async def delete_all_playlists(client, message, _):
     user_id = message.from_user.id
     _playlist = await get_playlist_names(user_id)
     if _playlist:
-        caption = "<blockquote>⚠️️ <b>Are you sure you want to delete entire playlist?</b></blockquote>"
+        caption = "<blockquote>⚠ <b>Are you sure you want to delete entire playlist?</b></blockquote>"
         blocks = html_to_rich_blocks(caption)
         blocks += warning_markup(_)
         await deliver_rich(client, message.chat.id, blocks)
