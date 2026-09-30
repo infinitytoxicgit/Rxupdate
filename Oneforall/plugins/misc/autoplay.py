@@ -15,10 +15,11 @@ from Oneforall.utils.inline.rich import (
 )
 
 autoplaydb = mongodb.autoplay
+playlistdb = mongodb.playlist
 previous_tracks = {}
 
 
-# Database Helpers directly defined to prevent import errors
+# Database Helpers
 async def is_autoplay_on(chat_id: int) -> bool:
     mode = await autoplaydb.find_one({"chat_id": chat_id})
     if not mode:
@@ -37,8 +38,8 @@ async def set_autoplay(chat_id: int, status: bool):
 async def get_autoplay_mood(chat_id: int):
     mode = await autoplaydb.find_one({"chat_id": chat_id})
     if not mode:
-        return {"mood": "chill", "language": "hindi"}
-    return mode.get("mood_data", {"mood": "chill", "language": "hindi"})
+        return {"mood": "romantic", "language": "hindi"}
+    return mode.get("mood_data", {"mood": "romantic", "language": "hindi"})
 
 
 async def set_autoplay_mood(chat_id: int, mood_data: dict):
@@ -103,7 +104,7 @@ async def handle_language_selection(client, CallbackQuery, _):
     if chat_id not in lyrical:
         lyrical[chat_id] = {}
 
-    mood = lyrical[chat_id].get("autoplay_mood", "chill")
+    mood = lyrical[chat_id].get("autoplay_mood", "romantic")
 
     await set_autoplay(chat_id, True)
     await set_autoplay_mood(
@@ -176,32 +177,83 @@ async def toggle_autoplay(client, CallbackQuery, _):
     await edit_rich(CallbackQuery.message, blocks)
 
 
+# Interactive Add Playlist Callback
+@app.on_callback_query(filters.regex(r"^add_playlist_"))
+async def add_autoplay_to_playlist(client, CallbackQuery):
+    user_id = CallbackQuery.from_user.id
+    raw_vid = CallbackQuery.data.replace("add_playlist_", "").strip()
+
+    if not raw_vid:
+        return await CallbackQuery.answer("Failed to identify track!", show_alert=True)
+
+    user_pl = await playlistdb.find_one({"user_id": user_id, "videoid": raw_vid})
+    if user_pl:
+        return await CallbackQuery.answer("Yeh song pehle se aapki playlist me hai!", show_alert=True)
+
+    await playlistdb.insert_one(
+        {
+            "user_id": user_id,
+            "videoid": raw_vid,
+            "added_by": CallbackQuery.from_user.first_name,
+        }
+    )
+    await CallbackQuery.answer("✅ Song aapki personal playlist me add ho gaya!", show_alert=True)
+
+
 async def get_autoplay_recommendation(chat_id: int):
-    """Get valid and playable autoplay song recommendation"""
+    """Get unique and playable autoplay song recommendation without repeats"""
     if chat_id not in previous_tracks:
         previous_tracks[chat_id] = []
 
     mood_data = await get_autoplay_mood(chat_id)
-    mood = "chill"
+    mood = "romantic"
     language = "hindi"
 
     if isinstance(mood_data, dict):
-        mood = mood_data.get("mood", "chill")
+        mood = mood_data.get("mood", "romantic")
         language = mood_data.get("language", "hindi")
 
+    # Diverse romantic Hindi search queries to prevent repeats
+    romantic_artists = [
+        "Arijit Singh", "Atif Aslam", "Armaan Malik", "Jubin Nautiyal",
+        "Mohit Chauhan", "KK", "Darshan Raval", "Shaan", "Papon", "Sonu Nigam"
+    ]
+    random_artist = random.choice(romantic_artists)
+
     search_queries = [
-        f"best {language} {mood} songs audio official",
+        f"{random_artist} romantic {language} songs audio",
+        f"latest {language} {mood} songs lyrical",
+        f"classic {language} romantic love track",
+        f"heart touching {language} love song",
+        f"bollywood romantic melodies jukebox {random.randint(2015, 2024)}",
+        f"best {language} slow reverb acoustic romantic songs",
         f"popular {language} {mood} hit songs",
-        f"latest {language} {mood} tracks lyrical",
-        f"{language} {mood} acoustic audio",
-        f"top {language} {mood} melodies",
     ]
     random.shuffle(search_queries)
 
-    used_ids = [x.get("vidid") for x in previous_tracks[chat_id]]
+    used_ids = set([x.get("vidid") for x in previous_tracks[chat_id] if x.get("vidid")])
 
     for query in search_queries:
         try:
+            # Check if multi-search is supported, otherwise fallback to track
+            results = None
+            if hasattr(YouTube, "search"):
+                try:
+                    results = await YouTube.search(query, limit=5)
+                except Exception:
+                    results = None
+
+            if results and isinstance(results, list):
+                random.shuffle(results)
+                for item in results:
+                    t_id = item.get("id") or item.get("vidid")
+                    if t_id and t_id not in used_ids:
+                        used_ids.add(t_id)
+                        if len(previous_tracks[chat_id]) >= 50:
+                            previous_tracks[chat_id].pop(0)
+                        previous_tracks[chat_id].append({"title": item.get("title"), "vidid": t_id})
+                        return item, t_id
+
             track_data, track_id = await YouTube.track(query)
             if not track_data or not track_id:
                 continue
@@ -209,7 +261,6 @@ async def get_autoplay_recommendation(chat_id: int):
             if track_id in used_ids:
                 continue
 
-            # Verify availability before choosing
             try:
                 valid = await YouTube.exists(track_id) if hasattr(YouTube, "exists") else True
                 if not valid:
@@ -217,7 +268,7 @@ async def get_autoplay_recommendation(chat_id: int):
             except Exception:
                 pass
 
-            if len(previous_tracks[chat_id]) >= 25:
+            if len(previous_tracks[chat_id]) >= 50:
                 previous_tracks[chat_id].pop(0)
 
             previous_tracks[chat_id].append(
@@ -232,12 +283,19 @@ async def get_autoplay_recommendation(chat_id: int):
         except Exception:
             continue
 
-    # Final reliable fallback
-    try:
-        track_data, track_id = await YouTube.track(f"{language} {mood} official audio")
-        if track_data and track_id:
-            return track_data, track_id
-    except Exception as e:
-        print(f"Autoplay Fallback Failed: {e}")
+    # Fallback with safety against repetition
+    fallback_queries = [
+        f"Arijit Singh {mood} songs",
+        f"Bollywood {mood} love songs",
+        f"Tum Hi Ho {language} romantic audio",
+    ]
+    for fb_q in fallback_queries:
+        try:
+            track_data, track_id = await YouTube.track(fb_q)
+            if track_data and track_id and track_id not in used_ids:
+                previous_tracks[chat_id].append({"title": track_data.get("title"), "vidid": track_id})
+                return track_data, track_id
+        except Exception:
+            pass
 
     return None, None
