@@ -175,6 +175,7 @@ class Call(PyTgCalls):
         dur = int(dur)
         played, con_seconds = speed_converter(playing[0]["played"], speed)
         duration = seconds_to_min(dur)
+        stream_is_video = str(playing[0]["streamtype"]).lower().strip() == "video"
         stream = (
             MediaStream(
                 out,
@@ -182,7 +183,7 @@ class Call(PyTgCalls):
                 video_parameters=VideoQuality.SD_480p,
                 ffmpeg_parameters=f"-ss {played} -to {duration}",
             )
-            if playing[0]["streamtype"] == "video"
+            if stream_is_video
             else MediaStream(
                 out,
                 audio_parameters=AudioQuality.HIGH,
@@ -249,6 +250,7 @@ class Call(PyTgCalls):
 
     async def seek_stream(self, chat_id, file_path, to_seek, duration, mode):
         assistant = await group_assistant(self, chat_id)
+        is_vid = str(mode).lower().strip() == "video"
         stream = (
             MediaStream(
                 file_path,
@@ -256,7 +258,7 @@ class Call(PyTgCalls):
                 video_parameters=VideoQuality.SD_480p,
                 ffmpeg_parameters=f"-ss {to_seek} -to {duration}",
             )
-            if mode == "video"
+            if is_vid
             else MediaStream(
                 file_path,
                 audio_parameters=AudioQuality.HIGH,
@@ -365,7 +367,7 @@ class Call(PyTgCalls):
                     if track_data and track_id:
                         clean_tid = str(track_id).replace("vid_", "").strip()
                         mood_info = await get_autoplay_mood(chat_id)
-                        m_tag = mood_info.get("mood", "chill").title()
+                        m_tag = mood_info.get("mood", "romantic").title()
                         l_tag = mood_info.get("language", "hindi").title()
                         auto_requester = f"Autoplay [{m_tag} | {l_tag}]"
 
@@ -398,6 +400,11 @@ class Call(PyTgCalls):
                                         callback_data=f"ADMIN Skip|{chat_id}",
                                     ),
                                     types.RichMessageButton(
+                                        text="➕ Add Playlist",
+                                        style=enums.ButtonStyle.SUCCESS,
+                                        callback_data=f"add_playlist_{clean_tid}",
+                                    ),
+                                    types.RichMessageButton(
                                         text="❌ Disable Autoplay",
                                         style=enums.ButtonStyle.DANGER,
                                         callback_data=f"AutoPlay|{chat_id}",
@@ -408,11 +415,13 @@ class Call(PyTgCalls):
                         auto_msg = await deliver_rich(app, chat_id, blocks)
                         setattr(self, f"_auto_msg_{chat_id}", auto_msg)
 
+                        last_stream_mode = popped.get("streamtype", "audio") if popped else "audio"
+
                         db[chat_id] = [
                             {
                                 "title": title,
                                 "dur": duration,
-                                "streamtype": "audio",
+                                "streamtype": last_stream_mode,
                                 "by": auto_requester,
                                 "chat_id": chat_id,
                                 "file": f"vid_{clean_tid}",
@@ -444,7 +453,7 @@ class Call(PyTgCalls):
         title = (check[0]["title"]).title()
         user = check[0]["by"]
         original_chat_id = check[0]["chat_id"]
-        streamtype = check[0]["streamtype"]
+        streamtype = str(check[0]["streamtype"]).lower().strip()
         raw_vidid = str(check[0]["vidid"]).replace("vid_", "").strip()
         db[chat_id][0]["played"] = 0
         if exis := (check[0]).get("old_dur"):
@@ -453,7 +462,11 @@ class Call(PyTgCalls):
             db[chat_id][0]["speed_path"] = None
             db[chat_id][0]["speed"] = 1.0
 
-        video = str(streamtype) == "video"
+        video = (streamtype == "video")
+        if video:
+            await add_active_video_chat(chat_id)
+        else:
+            await remove_active_video_chat(chat_id)
 
         if "live_" in queued:
             n, link = await YouTube.video(raw_vidid, True)
