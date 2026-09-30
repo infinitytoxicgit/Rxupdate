@@ -11,7 +11,7 @@ import config
 from Oneforall import YouTube, app
 from Oneforall.core.call import Hotty
 from Oneforall.misc import db
-from Oneforall.utils.database import add_active_video_chat, is_active_chat
+from Oneforall.utils.database import add_active_video_chat, is_active_chat, remove_active_video_chat
 from Oneforall.utils.exceptions import AssistantErr
 from Oneforall.utils.inline import close_markup
 from Oneforall.utils.inline.rich import (
@@ -102,10 +102,19 @@ async def _stream(
     if forceplay:
         await Hotty.force_stop_stream(chat_id)
 
+    # Boolean clean check
+    is_video_mode = bool(video)
+    status = True if is_video_mode else None
+
     if streamtype == "playlist":
         first_song = True
         added_count = 0
-        status = True if video else None
+
+        # Video mode database sync
+        if is_video_mode:
+            await add_active_video_chat(chat_id)
+        else:
+            await remove_active_video_chat(chat_id)
 
         for search in result:
             if added_count >= config.PLAYLIST_FETCH_LIMIT:
@@ -154,7 +163,7 @@ async def _stream(
                     user_name,
                     vidid,
                     user_id,
-                    "video" if video else "audio",
+                    "video" if is_video_mode else "audio",
                 )
                 added_count += 1
             else:
@@ -163,18 +172,19 @@ async def _stream(
                         db[chat_id] = []
 
                     try:
-                        file_path, direct = await _fetch(_, chat_id, vidid, mystic, video)
+                        file_path, direct = await _fetch(_, chat_id, vidid, mystic, is_video_mode)
                     except Exception:
                         continue
 
                     thumb_task = asyncio.ensure_future(get_thumb(vidid))
                     try:
+                        # CRITICAL FIX: Jab video mode ho, tab image=None pass karo taaki VC video stream switch kare
                         await Hotty.join_call(
                             chat_id,
                             original_chat_id,
                             file_path,
                             video=status,
-                            image=thumbnail,
+                            image=None if is_video_mode else thumbnail,
                         )
                     except Exception as e:
                         if mystic:
@@ -190,7 +200,7 @@ async def _stream(
                         user_name,
                         vidid,
                         user_id,
-                        "video" if video else "audio",
+                        "video" if is_video_mode else "audio",
                         forceplay=forceplay,
                     )
                     img = await thumb_task
@@ -222,7 +232,7 @@ async def _stream(
                         user_name,
                         vidid,
                         user_id,
-                        "video" if video else "audio",
+                        "video" if is_video_mode else "audio",
                     )
                     added_count += 1
 
@@ -239,7 +249,7 @@ async def _stream(
             "<blockquote expandable>"
             f"👤 <b>Playlist Owner:</b> {user_name}\n"
             f"📊 <b>Total Queued:</b> <code>{added_count} tracks</code>\n"
-            f"🎬 <b>Mode:</b> <code>{'Video' if video else 'Audio'}</code></blockquote>"
+            f"🎬 <b>Mode:</b> <code>{'Video' if is_video_mode else 'Audio'}</code></blockquote>"
         )
         blocks = html_to_rich_blocks(caption)
         blocks.append(
@@ -267,13 +277,13 @@ async def _stream(
         title = (result["title"]).title()
         duration_min = result["duration_min"]
         thumbnail = result["thumb"]
-        status = True if video else None
+        status = True if is_video_mode else None
         thumb_task = (
             None
             if await is_active_chat(chat_id)
             else asyncio.ensure_future(get_thumb(vidid))
         )
-        file_path, direct = await _fetch(_, chat_id, vidid, mystic, video)
+        file_path, direct = await _fetch(_, chat_id, vidid, mystic, is_video_mode)
         if await is_active_chat(chat_id):
             await put_queue(
                 chat_id,
@@ -284,7 +294,7 @@ async def _stream(
                 user_name,
                 vidid,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
             )
             await _announce_queue(
                 _, chat_id, original_chat_id, mystic, title, duration_min, user_name
@@ -292,12 +302,17 @@ async def _stream(
         else:
             if not forceplay:
                 db[chat_id] = []
+            if is_video_mode:
+                await add_active_video_chat(chat_id)
+            else:
+                await remove_active_video_chat(chat_id)
+
             await Hotty.join_call(
                 chat_id,
                 original_chat_id,
                 file_path,
                 video=status,
-                image=thumbnail,
+                image=None if is_video_mode else thumbnail,
             )
             await put_queue(
                 chat_id,
@@ -308,7 +323,7 @@ async def _stream(
                 user_name,
                 vidid,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
                 forceplay=forceplay,
             )
             img = await (thumb_task if thumb_task else get_thumb(vidid))
@@ -351,6 +366,7 @@ async def _stream(
         else:
             if not forceplay:
                 db[chat_id] = []
+            await remove_active_video_chat(chat_id)
             await Hotty.join_call(chat_id, original_chat_id, file_path, video=None)
             await put_queue(
                 chat_id,
@@ -383,7 +399,7 @@ async def _stream(
         link = result["link"]
         title = (result["title"]).title()
         duration_min = result["dur"]
-        status = True if video else None
+        status = True if is_video_mode else None
         if await is_active_chat(chat_id):
             await put_queue(
                 chat_id,
@@ -394,7 +410,7 @@ async def _stream(
                 user_name,
                 streamtype,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
             )
             await _announce_queue(
                 _, chat_id, original_chat_id, mystic, title, duration_min, user_name
@@ -402,6 +418,11 @@ async def _stream(
         else:
             if not forceplay:
                 db[chat_id] = []
+            if is_video_mode:
+                await add_active_video_chat(chat_id)
+            else:
+                await remove_active_video_chat(chat_id)
+
             await Hotty.join_call(chat_id, original_chat_id, file_path, video=status)
             await put_queue(
                 chat_id,
@@ -412,12 +433,10 @@ async def _stream(
                 user_name,
                 streamtype,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
                 forceplay=forceplay,
             )
-            if video:
-                await add_active_video_chat(chat_id)
-            thumb = config.TELEGRAM_VIDEO_URL if video else config.TELEGRAM_AUDIO_URL
+            thumb = config.TELEGRAM_VIDEO_URL if is_video_mode else config.TELEGRAM_AUDIO_URL
             caption = _["stream_1"].format(link, title[:23], duration_min, user_name)
             run = await send_now_playing_rich(
                 app,
@@ -436,7 +455,7 @@ async def _stream(
         title = (result["title"]).title()
         thumbnail = result["thumb"]
         duration_min = "Live Track"
-        status = True if video else None
+        status = True if is_video_mode else None
         if await is_active_chat(chat_id):
             await put_queue(
                 chat_id,
@@ -447,7 +466,7 @@ async def _stream(
                 user_name,
                 vidid,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
             )
             await _announce_queue(
                 _, chat_id, original_chat_id, mystic, title, duration_min, user_name
@@ -455,6 +474,11 @@ async def _stream(
         else:
             if not forceplay:
                 db[chat_id] = []
+            if is_video_mode:
+                await add_active_video_chat(chat_id)
+            else:
+                await remove_active_video_chat(chat_id)
+
             n, file_path = await YouTube.video(link)
             if n == 0:
                 raise AssistantErr(_["str_3"])
@@ -463,7 +487,7 @@ async def _stream(
                 original_chat_id,
                 file_path,
                 video=status,
-                image=thumbnail if thumbnail else None,
+                image=None if is_video_mode else thumbnail,
             )
             await put_queue(
                 chat_id,
@@ -474,7 +498,7 @@ async def _stream(
                 user_name,
                 vidid,
                 user_id,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
                 forceplay=forceplay,
             )
             img = await get_thumb(vidid)
@@ -508,7 +532,7 @@ async def _stream(
                 duration_min,
                 user_name,
                 link,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
             )
             await _announce_queue(
                 _, chat_id, original_chat_id, mystic, title, duration_min, user_name
@@ -516,11 +540,16 @@ async def _stream(
         else:
             if not forceplay:
                 db[chat_id] = []
+            if is_video_mode:
+                await add_active_video_chat(chat_id)
+            else:
+                await remove_active_video_chat(chat_id)
+
             await Hotty.join_call(
                 chat_id,
                 original_chat_id,
                 link,
-                video=True if video else None,
+                video=status,
             )
             await put_queue_index(
                 chat_id,
@@ -530,7 +559,7 @@ async def _stream(
                 duration_min,
                 user_name,
                 link,
-                "video" if video else "audio",
+                "video" if is_video_mode else "audio",
                 forceplay=forceplay,
             )
             caption = _["stream_2"].format(user_name)
