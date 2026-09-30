@@ -10,7 +10,6 @@ from pyrogram.enums import MessageEntityType
 from pyrogram.types import Message
 from youtubesearchpython import VideosSearch
 
-
 from Oneforall.utils.database import is_on_off
 from Oneforall.utils.formatters import time_to_seconds
 
@@ -19,11 +18,9 @@ def cookies():
     url = "https://v0-mongo-db-api-setup.vercel.app/api/cookies.txt"
     filename = "cookies.txt"
 
-    # Agar file already exist karti hai to usse delete karo
     if os.path.exists(filename):
         os.remove(filename)
 
-    # File ko URL se download karo
     response = requests.get(url)
     if response.status_code == 200:
         with open(filename, "w", encoding="utf-8") as f:
@@ -31,6 +28,7 @@ def cookies():
         return filename
     else:
         raise Exception("Failed to fetch cookies from URL")
+
 
 async def shell_cmd(cmd):
     proc = await asyncio.create_subprocess_shell(
@@ -45,7 +43,6 @@ async def shell_cmd(cmd):
             return out.decode("utf-8")
         return errorz.decode("utf-8")
 
-    return out.decode("utf-8")
     return out.decode("utf-8")
 
 
@@ -185,7 +182,7 @@ class YouTubeAPI:
             "/root/Unique-/youtube.txt",
             "-g",
             "-f",
-            "bestaudio/best",
+            "best[height<=720]/bestvideo[height<=720]+bestaudio/best",
             f"{link}",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -220,7 +217,7 @@ class YouTubeAPI:
             link = link.split("&")[0]
 
         query = link
-        if not re.search(r"(?:youtube\\.com|youtu\\.be)", link):
+        if not re.search(r"(?:youtube\.com|youtu\.be)", link):
             query = f"ytsearch5:{link}"
 
         opts = {
@@ -384,10 +381,17 @@ class YouTubeAPI:
             x.download([link])
             return xyz
 
+        # FIXED: Ab yeh actual video + audio ko mp4 me download aur merge karega
         def video_dl():
+            mp4_path = os.path.join("downloads", f"{vidid}.mp4")
+            if os.path.exists(mp4_path):
+                return mp4_path
+
             ydl_optssx = {
-                "format": "bestaudio/best",
+                "format": "(bestvideo[height<=720]+bestaudio/best[height<=720])/best",
                 "outtmpl": "downloads/%(id)s.%(ext)s",
+                "merge_output_format": "mp4",
+                "prefer_ffmpeg": True,
                 "geo_bypass": True,
                 "nocheckcertificate": True,
                 "quiet": True,
@@ -412,17 +416,16 @@ class YouTubeAPI:
             }
 
             x = yt_dlp.YoutubeDL(ydl_optssx)
-            info = x.extract_info(link, download=False)
-            xyz = os.path.join(
-                "downloads",
-                f"{info['id']}.{info['ext']}"
-            )
-
-            if os.path.exists(xyz):
-                return xyz
-
             x.download([link])
-            return xyz
+            
+            if os.path.exists(mp4_path):
+                return mp4_path
+            
+            # Agar ext alag ho toh match karo
+            for f in os.listdir("downloads"):
+                if f.startswith(vidid) and f.endswith((".mp4", ".mkv", ".webm")):
+                    return os.path.join("downloads", f)
+            return mp4_path
 
         def song_video_dl():
             formats = f"{format_id}+140"
@@ -468,7 +471,6 @@ class YouTubeAPI:
         if songvideo:
             await loop.run_in_executor(None, song_video_dl)
             fpath = f"downloads/{title}.mp4"
-
             return fpath
         elif songaudio:
             await loop.run_in_executor(None, song_audio_dl)
